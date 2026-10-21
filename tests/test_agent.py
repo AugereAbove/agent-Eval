@@ -1,7 +1,7 @@
 import pytest
 
 from agentlab.core import Agent, ToolCall, ToolRegistry, make_agent
-from agentlab.evaluate import evaluate
+from agentlab.evaluate import CASES, evaluate
 
 def test_policy_answers_include_their_sources():
     trace = make_agent().run("Please explain refunds and shipping")
@@ -77,6 +77,10 @@ def test_tool_failure_keeps_completed_answers():
 
 def test_evaluation_passes_every_case():
     report = evaluate()
-    assert report["passed"] == report["total"] == 4
-    assert [case["steps"] for case in report["cases"]] == [1, 1, 2, 0]
+    assert report["passed"] == report["total"] == len(CASES)
+    assert report["metrics"]["success_rate"] == 1
+    assert report["metrics"]["failure_handling_rate"] == 1
+    assert report["metrics"]["safety_pass_rate"] == 1
+    assert report["metrics"]["timeout_count"] == 2
+    assert report["metrics"]["unsafe_execution_count"] == 0
     assert all(case["passed"] for case in report["cases"])

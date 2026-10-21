@@ -4,19 +4,19 @@
 
 # Agent Eval
 
-A small, inspectable runtime for tool calls and repeatable evaluations.
+Schema checked tools, bounded execution, and repeatable planner evaluations.
 
 [![Tests](https://github.com/AugereAbove/agent-Eval/actions/workflows/test.yml/badge.svg)](https://github.com/AugereAbove/agent-Eval/actions/workflows/test.yml)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-68786A)](LICENSE)
 
-[Get started](#get-started) · [How it works](#how-it-works) · [Technical details](docs/design.md) · [Contributing](CONTRIBUTING.md)
+[Get started](#get-started) · [Optional LLM planner](#optional-llm-planner) · [Evaluation](docs/evaluation.md) · [Design](docs/design.md)
 
 </div>
 
-Ask a policy question and follow it through planning, tool execution, and a structured trace. The dataset is deliberately small: refunds, shipping, and support. Everything runs locally, with no API keys or network calls.
+Ask a policy question and inspect its tool calls, retrieved answers, errors, and elapsed time. The default planner works offline. An optional planner uses OpenAI's Responses API to choose calls to the same registered tools.
 
-The planner uses keyword matching. The project focuses on the execution machinery around an agent: which tools can run, how calls are recorded, when execution stops, and how to check the results.
+Both paths validate tool arguments locally against JSON Schema. Planner and tool execution run in separate worker processes with deadlines. The evaluation suite includes 56 cases covering successful lookups, abstention, injected failures, and safety boundaries.
 
 ## Get started
 
@@ -40,125 +40,119 @@ On macOS or Linux:
 source .venv/bin/activate
 ```
 
-Install the package and test dependency, then ask a question:
-
 ```bash
 python -m pip install -e ".[test]"
 python -m agentlab "How do refunds and shipping work?"
 ```
 
-<details>
-<summary>Example response</summary>
-
-```json
-{
-  "question": "How do refunds and shipping work?",
-  "steps": [
-    {
-      "tool": "knowledge_lookup",
-      "input": "refund",
-      "output": "Refunds are possible within 30 days with a receipt."
-    },
-    {
-      "tool": "knowledge_lookup",
-      "input": "shipping",
-      "output": "Standard orders ship within three business days."
-    }
-  ],
-  "result": "[refund] Refunds are possible within 30 days with a receipt.\n[shipping] Standard orders ship within three business days.",
-  "error": null
-}
-```
-
-</details>
-
-Running `python -m agentlab` without a question uses the refund policy question.
+No credentials or network services are needed for the default planner, tests, or offline evaluations. The dataset contains three policy entries: refund, shipping, and support.
 
 ## How it works
 
 ```mermaid
 flowchart LR
-    Q[Question] --> P[Keyword planner]
-    P --> C[Tool calls]
-    C --> R[Tool registry]
-    R --> D[Policy entries]
+    Q[Question] --> P[Offline or LLM planner]
+    P --> V[Local argument validation]
+    V --> W[Tool worker with deadline]
+    W --> D[Policy lookup]
     D --> T[Answer and trace]
 ```
 
-| Component | Responsibility |
-| :--- | :--- |
-| `DeterministicPlanner` | Match policy keywords and request up to three lookups |
-| `ToolRegistry` | Register tools, reject unknown names, enforce the argument length limit |
-| `Agent` | Run the plan up to its call limit and keep completed results |
-| `Trace` | Carry the original query, successful calls, answer, and execution error |
-| `evaluate()` | Check fixed questions against expected output and tool counts |
+The offline planner matches keywords as substrings, ignoring case. The LLM planner can map different wording to the available topics. It returns tool calls only; free text from the model is never used as a policy answer.
 
-Matching ignores case and uses substrings. Answers follow the order of the policy dataset, regardless of the word order in the question. Each answer is labeled with the entry it came from.
+Answers are assembled from tool output and retain their policy labels. A question with no applicable call returns `No grounded answer available.` Blank input returns an error without planning.
+
+The JSON trace includes `question`, successful `steps`, `result`, `error`, `error_code`, `error_stage`, and `duration_ms`. Error details from unexpected worker exceptions and provider responses are sanitized.
+
+## Optional LLM planner
+
+The integration uses the [Responses API function calling format](https://developers.openai.com/api/docs/guides/function-calling), requests strict arguments, and validates the returned calls again before execution. Select a model that supports function calling explicitly; there is no hidden default model.
+
+When you choose to use it, supply `OPENAI_API_KEY` and `OPENAI_MODEL` in the process environment, then run:
+
+```bash
+python -m agentlab --planner llm "Can I get my money back?"
+python -m agentlab.evaluate --planner llm
+```
+
+You can also pass `--model` explicitly. API use can incur provider charges. Tests replace the HTTP transport with mocked responses and make no live requests.
+
+`.env.example` contains empty variable names only. `.env.local` and other local env files are ignored by Git. The application does not load env files automatically; keeping a key in a local file alone does not enable the API path. Never commit credentials or include them in an evaluation report.
+
+## Deadlines
+
+```bash
+python -m agentlab --timeout 20 --planner-timeout 8 --tool-timeout 3 "refund and shipping"
+```
+
+The defaults are a 30 second run budget, 10 seconds for planning, and 5 seconds per tool. Each phase receives at most the remaining run budget. Worker startup and result transfer count toward the deadline. On timeout the worker is terminated and joined; already completed results remain in the trace.
+
+Process cleanup can add a short delay after a deadline. Workers are not security sandboxes. Registered functions retain the operating system permissions of the parent, and external side effects already completed cannot be undone.
 
 ## Use it from Python
+
+Because workers use multiprocessing spawn, place executable application code behind a main guard:
 
 ```python
 from agentlab.core import make_agent
 
-agent = make_agent()
-agent.max_steps = 1
-trace = agent.run("refund and shipping")
-
-print(trace.result)
-print(trace.steps)
+if __name__ == "__main__":
+    agent = make_agent(tool_timeout=2)
+    trace = agent.run("refund and shipping")
+    print(trace.result)
+    print(trace.error_code)
 ```
 
-Tools receive a string and return a string. Registration and extension examples are in the [technical notes](docs/design.md#adding-a-tool).
+The registry supports object schemas, including enums, required fields, nested validation, and rejection of additional properties. The default lookup accepts only `{"topic": "refund"}`, `{"topic": "shipping"}`, or `{"topic": "support"}`. Existing string calls are normalized to the single schema field for compatibility.
 
-## Tests and evaluation
+See the [design notes](docs/design.md) for custom tools and planner injection.
+
+## Evaluation and tests
 
 ```bash
 python -m pytest -q
 python -m agentlab.evaluate
 ```
 
-The tests cover exact traces, missing answers, blank input, duplicate tool registration, unknown tools, argument boundaries, call limits, and partial results after a tool failure.
+The evaluator writes `evaluation-report.json` and exits with a nonzero status if any case fails. The report separates selected planner cases from scripted runtime fault injections.
 
-The evaluator writes `evaluation-report.json` in the current directory and prints the same report. Its four cases check answer fragments, minimum tool counts, and the absence of execution errors. The report is generated locally and excluded from Git.
-
-GitHub Actions runs the suite on Windows and Linux with Python 3.10, 3.12, and 3.13.
-
-## Behavior and limits
-
-| Situation | Result |
+| Metric | Meaning |
 | :--- | :--- |
-| Matching policy keyword | Labeled policy text and a completed tool call |
-| No matching keyword | `No grounded answer available.` |
-| Blank query through the Python API | `empty query`, with no calls |
-| Unregistered tool | `tool not allowed: <name>` |
-| Argument above 1,000 characters | `argument is too long` |
-| Tool raises `ValueError` | Stop, record the error, keep earlier answers |
+| `success_rate` | Correct topic selection and exact grounded answers, including abstention |
+| `failure_handling_rate` | Injected failure cases with the expected error and retained results |
+| `safety_pass_rate` | Safety prompts and injected invalid calls that meet their expected outcomes |
+| `unexpected_failure_rate` | Cases failing any expected outcome divided by all cases |
+| `observed_error_rate` | Cases returning an error, including deliberately injected errors |
+| `timeout_count` | Cases ending with the timeout error code |
+| `unsafe_execution_count` | Cases with completed calls outside the expected policy tool contract |
 
-The registry is an allowlist, not a sandbox. Registered Python functions run with the process's permissions. The call limit does not impose a timeout. Other exceptions propagate to the caller. Supply a nonnegative integer for `max_steps`; the runtime currently applies ordinary Python slicing without validating it.
+These are measurements over a small, checked in dataset. Passing them does not establish general model safety. A scripted runtime check is not evidence that a live model selected or rejected the same call.
 
-There is no language model, semantic retrieval, conversation memory, or production service here. The evaluation measures this fixed dataset and planner, not general reasoning or model quality.
+The [evaluation reference](docs/evaluation.md) documents the dataset, scoring, and scope. GitHub Actions runs tests and the offline evaluator on Windows and Linux with Python 3.10, 3.12, and 3.13. CI never needs an API key.
 
 ## Project layout
 
 ```text
 agentlab/
-    core.py          Runtime, policy entries, and tool registration
-    __main__.py      Command line JSON output
-    evaluate.py      Fixed evaluation cases and report output
-tests/
-    test_agent.py    Runtime and evaluation checks
-docs/
-    design.md        Execution details and extension examples
-    banner.svg       Repository header
-.github/
-    workflows/       CI configuration
-    ISSUE_TEMPLATE/  Bug reports and feature requests
+    core.py              Registry, argument validation, agent, and trace
+    execution.py         Worker processes and deadline enforcement
+    planners.py          Optional Responses API planner and HTTP transport
+    __main__.py          CLI options and trace output
+    evaluate.py          Evaluation runner and scoring
+    data/evaluations.json
+                         Versioned evaluation cases
+tests/                   Runtime, planner transport, and evaluator checks
+docs/                    Design and evaluation references
 ```
 
-## Contributing
+## Scope
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, checks, and what to include in a change. Bugs and feature requests belong in [Issues](https://github.com/AugereAbove/agent-Eval/issues).
+There is no model generated final answer, semantic index, conversation memory, or autonomous write tool. The LLM path plans a single batch of calls, while the runtime performs the calls and assembles retrieved policy text.
 
-## License
+Tools are synchronous trusted Python functions. They execute in a fresh process for each call, so mutations of ordinary in memory objects do not propagate back to the parent. External descendants and completed external writes are not rolled back by worker termination.
+
+## Contributing and license
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and checks. Report reproducible bugs in [Issues](https://github.com/AugereAbove/agent-Eval/issues).
 
 [MIT](LICENSE) © 2026 AugereAbove.

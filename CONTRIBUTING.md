@@ -29,3 +29,11 @@ A pull request should explain the problem, the resulting behavior, and how the c
 ## Reporting a problem
 
 Include your operating system, Python version, exact command or short code example, expected behavior, and actual output. Remove credentials and private data before posting a trace.
+
+## Runtime changes
+
+Changes to tool schemas, workers, or planners need focused checks for rejection paths and deadlines. Keep all automated tests offline by injecting an LLM transport; do not require an API key in CI. Worker code runs under multiprocessing spawn on every supported platform.
+
+Update `agentlab/data/evaluations.json` when adding evaluation cases and document any scoring changes in `docs/evaluation.md`. Keep scripted runtime injections separate from selected planner measurements. Generated evaluation reports remain local.
+
+Never add populated env files, authorization headers, or credentials to commits. `.env.example` contains empty settings only.

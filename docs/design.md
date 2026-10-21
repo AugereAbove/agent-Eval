@@ -2,80 +2,98 @@
 
 ## Execution path
 
-`make_agent()` builds a fresh registry, registers `knowledge_lookup`, and returns an `Agent` with a `DeterministicPlanner`. Each agent gets its own registry. The policy dictionary is shared at module scope.
+`make_agent()` registers the policy lookup tool and returns an offline agent by default. A planner implements `plan(query)` and returns a list of `ToolCall` objects. Up to 64 planned calls can be transferred back; execution uses the first `max_steps` calls, with a default limit of three.
 
-The planner lowercases the query and checks each key in `DOCUMENTS`. Matching is substring based, so `refunds` and `nonrefundable` both match `refund`. It does not interpret negation or intent. Matches retain dictionary order and become at most three `ToolCall` objects.
+The planner runs in a spawned worker. The registry validates each selected call in the parent before executing the tool in another worker. Only successfully completed calls are appended to `Trace.steps`.
 
-`Agent.run()` rejects blank input before planning. It slices the plan using `max_steps`, executes each call, and records successful results. A `ValueError` stops the loop. Earlier results remain in the trace; the failed call does not appear in `steps`.
+The answer is assembled from successful outputs, each prefixed by its argument label. An error stops execution while retaining earlier steps. No answer from the model is inserted into the trace result.
 
-The final answer joins successful results with newlines. Each line starts with the call argument in square brackets. When no call produces an answer, the result is `No grounded answer available.` Blank input returns an empty result with `empty query` in the error field.
+## Schemas
 
-## Public types
+`ToolRegistry.register()` takes a callable, optional JSON Schema parameters, and a description. Schemas must describe an object and pass the JSON Schema meta schema check. Schema definitions are trusted application configuration, not model supplied input.
 
-| Name | Fields or methods |
-| :--- | :--- |
-| `ToolCall` | Frozen dataclass with `name` and `argument` |
-| `Trace` | Dataclass with `query`, `steps`, `result`, and optional `error` |
-| `ToolRegistry` | `register(name, tool)` and `execute(call)` |
-| `DeterministicPlanner` | `plan(query)` returns a list of tool calls |
-| `Agent` | `run(query)` returns a trace; `max_steps` defaults to 3 |
-| `make_agent` | Creates the default planner and lookup registry |
+JSON Schema validation is performed by `jsonschema.Draft202012Validator`. The default lookup schema requires one `topic` string, restricts it to the three dataset keys, and sets `additionalProperties` to false. Validation happens before a worker can execute the tool.
 
-A trace step has three string fields: `tool`, `input`, and `output`. Error messages are strings, not structured error codes.
+Argument payloads must serialize as JSON without nonfinite numbers and fit within 16,000 serialized characters. Legacy string arguments have a 1,000 character limit. Tool output must be a string no longer than 16,000 characters.
 
-## Adding a tool
-
-This example runs independently of the default policy agent:
+Tools without an explicit schema receive a single `value` string field and retain the original positional string callable convention. A string passed to a tool with one schema property is normalized to that property. Tools with explicit schemas receive validated keyword arguments.
 
 ```python
 from agentlab.core import ToolCall, ToolRegistry
 
-registry = ToolRegistry()
-registry.register("uppercase", str.upper)
-
-result = registry.execute(ToolCall("uppercase", "hello"))
-assert result == "HELLO"
+if __name__ == "__main__":
+    tools = ToolRegistry(timeout=2)
+    tools.register(
+        "uppercase",
+        lambda text: text.upper(),
+        parameters={
+            "type": "object",
+            "properties": {"text": {"type": "string", "maxLength": 100}},
+            "required": ["text"],
+            "additionalProperties": False,
+        },
+    )
+    print(tools.execute(ToolCall("uppercase", {"text": "hello"})))
 ```
 
-Names must be unique. The registry checks the name before checking argument length. Arguments of exactly 1,000 characters are accepted; longer arguments raise `ValueError`.
+## Optional LLM planner
 
-Tools are ordinary synchronous Python callables. Type hints describe the expected string input and output, but there is no runtime type validation beyond the name and length checks. Only register functions you intend to execute.
+`LLMPlanner` requires an explicit model name and a registry. It sends strict function definitions to `https://api.openai.com/v1/responses` through a replaceable transport. The default HTTP transport uses Python's standard library and reads `OPENAI_API_KEY` only when making a request.
 
-## Replacing the planner
+The request sets `store` to false, supplies policy planning instructions, and limits output tokens. It does not retry. The HTTP request has its own socket timeout, while the agent enforces the outer wall clock budget by terminating the planner worker.
 
-The agent calls `plan(query)` on its planner. A small custom planner can supply explicit calls:
+The parser requires a completed response. It ignores reasoning and ordinary text messages, rejects refusals and unsupported output items, parses JSON function arguments, rejects duplicate JSON property names, and validates every returned call through the registry before returning a plan.
+
+An invalid call anywhere in the model batch rejects the batch before any call runs. The runtime validates calls again immediately before execution. API exceptions do not expose response bodies, authorization headers, or credentials in trace errors.
 
 ```python
-from agentlab.core import Agent, ToolCall, ToolRegistry
+from agentlab.core import make_agent
+from agentlab.planners import LLMPlanner
 
-class UppercasePlanner:
-    def plan(self, query: str) -> list[ToolCall]:
-        return [ToolCall("uppercase", query)]
-
-registry = ToolRegistry()
-registry.register("uppercase", str.upper)
-agent = Agent(UppercasePlanner(), registry, max_steps=1)
-
-trace = agent.run("hello")
-assert trace.result == "[hello] HELLO"
+if __name__ == "__main__":
+    agent = make_agent()
+    agent.planner = LLMPlanner("your-function-calling-model", agent.registry)
+    print(agent.run("When can I get my money back?").result)
 ```
 
-The constructor annotation names `DeterministicPlanner`, while runtime dispatch accepts an object with a compatible `plan` method. There is no provider adapter or retry loop. A model integration would also need validation of returned calls, timeout handling, usage accounting, and separate evaluation cases.
+This example needs a real model name and a credential in the process environment. No live API is used by the test suite.
 
-## Evaluation contract
+## Worker lifecycle
 
-`evaluate()` creates one default agent and runs the entries in `CASES`. Each entry contains a question, an expected answer fragment, and a minimum completed call count.
+`bounded_call()` serializes a trusted callable with cloudpickle, starts a daemon worker using multiprocessing spawn, and waits on a pipe only until the deadline. A result larger than the IPC limit is rejected. Worker crashes and missing results produce execution errors.
 
-A case passes only when the answer contains the fragment, enough calls completed, and `trace.error` is `None`. The return value contains `passed`, `total`, and `cases`. Each case contains its prompt, pass flag, and completed call count.
+The finally block closes the pipe, terminates a live worker, and joins it. If termination does not complete within one second, it kills the worker and waits up to another second. Deadline timings include serialization, startup, execution, and result transfer; cleanup can extend the observed elapsed time.
 
-The module command serializes that return value to `evaluation-report.json` and stdout. It does not use a failing process exit code when a case fails; the test suite asserts that all fixed cases pass.
+This is process lifetime control, not a security sandbox. The worker has the parent's filesystem and network permissions. Pickle payloads are generated locally from registered application code and must never come from an untrusted source. A tool can create external side effects before it times out; terminating it cannot undo those effects or guarantee termination of external subprocess descendants.
 
-## Failure boundaries
+Each phase runs from a serialized snapshot. In memory mutations in a planner or tool do not synchronize back to the parent. Use return values or an explicit external store for state. Applications must use the normal multiprocessing main guard.
 
-The registry does not isolate tools or restrict filesystem and network access inside registered functions. The step limit caps the number of calls, not the duration or resource use of an individual call.
+## Deadlines and limits
 
-`Agent.run()` catches `ValueError` from execution and trace assembly. Planner exceptions and other tool exceptions propagate. The CLI prints returned errors in JSON and otherwise follows normal Python exception handling.
+`timeout` bounds the entire run. `planner_timeout` caps the planning phase. `ToolRegistry.timeout` caps an individual tool, further limited by the run time remaining. All timeout settings must be positive finite numbers. `max_steps` must be a nonnegative integer.
 
-`max_steps` is not validated. Nonnegative integers are the intended input. Negative values currently use Python's negative slice behavior, and incompatible types raise an exception.
+Input queries are capped at 16,000 characters. Blank or invalid input fails before planning. A zero step limit permits planning but executes no calls. Excess planned calls are not executed.
 
-The default CLI also treats an empty argument string as a request for its default question. Use the Python API to test a truly empty query.
+## Trace and error contract
+
+The Python trace retains `query`, `steps`, `result`, and `error`. It also reports `error_code`, `error_stage`, and `duration_ms`. The CLI renames `query` to `question` and exits with status 1 when a run returns an error.
+
+| Error code | Meaning |
+| :--- | :--- |
+| `invalid_query` | Blank, invalid, or oversized question |
+| `invalid_plan` | Planner result is not a bounded list of tool calls |
+| `tool_not_allowed` | Tool name is absent from the registry |
+| `invalid_arguments` | Arguments fail the schema or payload checks |
+| `invalid_output` | Tool result violates the string output contract |
+| `timeout` | Planner, tool, or run deadline elapsed |
+| `planner_error` | Provider request, response, or argument parsing failed |
+| `planning_error` | Unexpected planning worker failure |
+| `execution_error` | Unexpected tool or worker failure |
+
+Error stages distinguish planning from execution. Unexpected exception details are replaced with generic messages. Registered tools may return their own data, so their outputs should still be treated according to the application's data handling requirements.
+
+## Validation evidence
+
+Tests run the planner against mocked Responses API payloads and mock the HTTP boundary separately. They cover unknown tools, additional arguments, missing and mistyped fields, duplicate JSON keys, incomplete responses, refusals, HTTP errors, and credential absence.
+
+Runtime tests cover worker crashes, deadlines, delayed file writes after timeout, exact grounded output, partial failure, schema boundaries, and step limits. Evaluation scoring also has negative tests so fabricated answers and unauthorized completed calls fail the corresponding checks.

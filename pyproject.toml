@@ -1,9 +1,10 @@
 [project]
 name = "agent-eval-lab"
-version = "0.1.0"
+version = "0.2.0"
 description = "A local tool execution runtime with structured traces and repeatable evaluations."
 readme = "README.md"
 requires-python = ">=3.10"
+dependencies = ["cloudpickle>=3.1,<4", "jsonschema>=4.23,<5"]
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{name = "AugereAbove"}]
@@ -26,3 +27,6 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["agentlab*"]
+
+[tool.setuptools.package-data]
+agentlab = ["data/*.json"]
