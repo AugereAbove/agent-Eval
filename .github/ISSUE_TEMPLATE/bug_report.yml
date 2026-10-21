@@ -1,0 +1,32 @@
+name: Bug report
+description: Report an unexpected result or execution error.
+title: "Bug: "
+body:
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      description: Include the exact command or a short Python example.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual result
+      description: Include the JSON response or traceback without private data.
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      placeholder: Windows 11, Python 3.12
+    validations:
+      required: true

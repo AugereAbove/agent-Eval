@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="300" viewBox="0 0 1200 300" role="img" aria-labelledby="title desc">
+  <title id="title">Agent Eval</title>
+  <desc id="desc">A local runtime connecting explicit tool calls to inspectable execution traces.</desc>
+  <rect width="1200" height="300" rx="16" fill="#14211f"/>
+  <path d="M40 248H1160" stroke="#38504a"/>
+  <text x="54" y="65" fill="#a1b5a5" font-family="monospace" font-size="15" letter-spacing="3">PYTHON / LOCAL EXECUTION</text>
+  <text x="50" y="153" fill="#f1f0e8" font-family="Segoe UI,Arial,sans-serif" font-size="72" font-weight="600">Agent Eval</text>
+  <text x="54" y="201" fill="#becbc2" font-family="Segoe UI,Arial,sans-serif" font-size="22">Explicit tools. Inspectable results.</text>
+  <g font-family="monospace" font-size="17" text-anchor="middle">
+    <rect x="732" y="101" width="118" height="66" rx="8" fill="#20352e" stroke="#527060"/>
+    <text x="791" y="141" fill="#e1e9df">PLAN</text>
+    <path d="M850 134H878M872 128L878 134L872 140" fill="none" stroke="#b5cf9e" stroke-width="2"/>
+    <rect x="888" y="101" width="118" height="66" rx="8" fill="#20352e" stroke="#527060"/>
+    <text x="947" y="141" fill="#e1e9df">CALL</text>
+    <path d="M1006 134H1034M1028 128L1034 134L1028 140" fill="none" stroke="#b5cf9e" stroke-width="2"/>
+    <rect x="1044" y="101" width="118" height="66" rx="8" fill="#b5cf9e"/>
+    <text x="1103" y="141" fill="#14211f">TRACE</text>
+  </g>
+  <text x="54" y="278" fill="#91a79a" font-family="monospace" font-size="13" letter-spacing="2">NO SERVICES TO START. NO KEYS TO CONFIGURE.</text>
+</svg>
